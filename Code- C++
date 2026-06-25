@@ -1,0 +1,119 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+const int ledVermelho = 2;
+const int ledVerde    = 3;
+const int trigEsq     = 4;
+const int echoEsq     = 5;
+const int trigDir     = 6;
+const int echoDir     = 7;
+
+const float distanciaMetros  = 0.60;
+const float velocidadeLimite = 1.39; // 5 km/h em m/s
+const int   LIMIAR_CM        = 20;
+const long  TIMEOUT_MS       = 5000;
+const long  DISPLAY_MS       = 2000;
+
+bool exibindo         = false;
+unsigned long fimExib = 0;
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(ledVermelho, OUTPUT);
+  pinMode(ledVerde,    OUTPUT);
+  pinMode(trigEsq, OUTPUT); pinMode(echoEsq, INPUT);
+  pinMode(trigDir, OUTPUT); pinMode(echoDir, INPUT);
+
+  lcd.init();
+  lcd.backlight();
+  lcd.print("Radar Pronto!");
+  delay(2000);
+  lcd.clear();
+  lcd.print("Aguardando...");
+}
+
+int lerSensor(int trig, int echo) {
+  digitalWrite(trig, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trig, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trig, LOW);
+
+  long dur = pulseIn(echo, HIGH, 30000);
+  if (dur == 0) return -1;
+
+  return (int)(dur * 0.017);
+}
+
+int lerSensorFiltrado(int trig, int echo, int amostras = 5) {
+  long soma = 0;
+  int validas = 0;
+  for (int i = 0; i < amostras; i++) {
+    int d = lerSensor(trig, echo);
+    if (d > 0) { soma += d; validas++; }
+    delay(5);
+  }
+  return validas > 0 ? (soma / validas) : -1;
+}
+
+void exibirResultado(float v) {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Vel: "); lcd.print(v, 2); lcd.print(" m/s");
+  lcd.setCursor(0, 1);
+
+  bool excedeu = v > velocidadeLimite;
+  if (excedeu) {
+    lcd.print("*** EXCESSO ***");
+    digitalWrite(ledVermelho, HIGH);
+    digitalWrite(ledVerde,    LOW);
+  } else {
+    lcd.print("   OK           ");
+    digitalWrite(ledVerde,    HIGH);
+    digitalWrite(ledVermelho, LOW);
+  }
+
+  Serial.print("Velocidade: "); Serial.print(v, 2); Serial.println(" m/s");
+
+  exibindo = true;
+  fimExib  = millis() + DISPLAY_MS;
+}
+
+void loop() {
+  if (exibindo) {
+    if (millis() >= fimExib) {
+      digitalWrite(ledVermelho, LOW);
+      digitalWrite(ledVerde,    LOW);
+      lcd.clear();
+      lcd.print("Aguardando...");
+      exibindo = false;
+    }
+    return;
+  }
+
+  int distEsq = lerSensorFiltrado(trigEsq, echoEsq);
+
+  if (distEsq > 0 && distEsq < LIMIAR_CM) {
+    unsigned long inicio = micros();
+
+    while (true) {
+      if ((micros() - inicio) > (TIMEOUT_MS * 1000UL)) return;
+
+      int distDir = lerSensorFiltrado(trigDir, echoDir);
+      if (distDir > 0 && distDir < LIMIAR_CM) break;
+      delay(5);
+    }
+
+    unsigned long fim = micros();
+    float tempoSegundos = (fim - inicio) / 1000000.0;
+
+    if (tempoSegundos > 0.0001) {
+      float velocidade = distanciaMetros / tempoSegundos; // direto em m/s
+      if (velocidade > 0 && velocidade < 10) { // teto: 10 m/s ≈ 36 km/h
+        exibirResultado(velocidade);
+      }
+    }
+  }
+}
